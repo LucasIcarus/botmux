@@ -44,6 +44,7 @@ import { listTeamReports, readTeamBoard, setTeamBoardEntry } from './services/te
 import type { CliId } from './adapters/cli/types.js';
 import type { ConnectorDefinition } from './services/connector-store.js';
 import { hd2dAssetPath, hd2dStatus, startHd2dDownload } from './dashboard/hd2d-assets.js';
+import { isValidRoleProfileId } from './services/role-profile-store.js';
 
 const SECRET_PATH = join(homedir(), '.botmux', '.dashboard-secret');
 const TOKEN_PATH = join(homedir(), '.botmux', '.dashboard-token');
@@ -294,7 +295,7 @@ function liveBots(): { larkAppId: string; botName: string }[] {
   return registry.list().map(d => ({ larkAppId: d.larkAppId, botName: d.botName }));
 }
 
-async function createTeamGroup(args: { name: string; larkAppIds: string[]; userOpenId?: string; preferredCreator?: string; ownerUnionIds?: string[] }): Promise<{
+async function createTeamGroup(args: { name: string; larkAppIds: string[]; userOpenId?: string; preferredCreator?: string; ownerUnionIds?: string[]; roleProfileId?: string }): Promise<{
   ok: boolean; chatId?: string; shareLink?: string; invalidBotIds?: string[]; invalidUserIds?: string[]; invalidOwnerUnionIds?: string[]; error?: string; autoInviteUnavailable?: boolean;
 }> {
   const selectedIds = Array.from(new Set(args.larkAppIds.filter(Boolean)));
@@ -320,7 +321,13 @@ async function createTeamGroup(args: { name: string; larkAppIds: string[]; userO
     const upstream = await proxyToDaemon(plan.creatorLarkAppId, '/api/groups/create', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ name: args.name, larkAppIds: selectedIds, userOpenIds, ownerUnionIds: args.ownerUnionIds ?? [] }),
+      body: JSON.stringify({
+        name: args.name,
+        larkAppIds: selectedIds,
+        userOpenIds,
+        ownerUnionIds: args.ownerUnionIds ?? [],
+        ...(args.roleProfileId ? { roleProfileId: args.roleProfileId } : {}),
+      }),
     });
     const text = await upstream.text();
     let parsed: any = null;
@@ -974,6 +981,130 @@ const server = createServer(async (req, res) => {
       }
     }
 
+    // ─── Role Profiles (aggregate/proxy to daemon) ────────────────────────
+    if (req.method === 'GET' && url.pathname === '/api/role-profiles') {
+      type RoleProfileAggregate = {
+        profileId: string;
+        entryCount: number;
+        updatedAt: number | null;
+        botEntries: Array<{ larkAppId: string; hasEntry: boolean }>;
+      };
+      const merged = new Map<string, RoleProfileAggregate>();
+      await Promise.all(registry.list().map(async d => {
+        try {
+          const r = await fetch(`http://127.0.0.1:${d.ipcPort}/api/role-profiles`);
+          if (!r.ok) return;
+          const j = await r.json() as { profiles?: any[]; larkAppId?: string };
+          for (const p of j.profiles ?? []) {
+            if (typeof p.profileId !== 'string') continue;
+            const cur: RoleProfileAggregate = merged.get(p.profileId) ?? { profileId: p.profileId, entryCount: 0, updatedAt: null, botEntries: [] };
+            cur.entryCount = Math.max(cur.entryCount, typeof p.entryCount === 'number' ? p.entryCount : 0);
+            if (typeof p.updatedAt === 'number') cur.updatedAt = cur.updatedAt === null ? p.updatedAt : Math.max(cur.updatedAt, p.updatedAt);
+            const larkAppId = j.larkAppId ?? d.larkAppId;
+            if (!cur.botEntries.some(entry => entry.larkAppId === larkAppId)) {
+              cur.botEntries.push({ larkAppId, hasEntry: p.hasCurrentBotEntry === true });
+            }
+            merged.set(p.profileId, cur);
+          }
+        } catch { /* skip offline/bad daemon */ }
+      }));
+      return jsonRes(res, 200, { profiles: [...merged.values()].sort((a, b) => a.profileId.localeCompare(b.profileId)) });
+    }
+
+    let mRoleProfileApply: RegExpMatchArray | null;
+    if (req.method === 'POST' && (mRoleProfileApply = url.pathname.match(/^\/api\/role-profiles\/([^/]+)\/apply$/))) {
+      const profileId = decodeURIComponent(mRoleProfileApply[1]);
+      if (!isValidRoleProfileId(profileId)) return jsonRes(res, 400, { ok: false, error: 'invalid_role_profile_id' });
+      let raw = '{}';
+      let parsed: { larkAppId?: unknown };
+      try {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        raw = Buffer.concat(chunks).toString('utf8') || '{}';
+        parsed = JSON.parse(raw);
+      } catch {
+        return jsonRes(res, 400, { ok: false, error: 'bad_json' });
+      }
+      const larkAppId = typeof parsed.larkAppId === 'string' ? parsed.larkAppId : '';
+      if (!larkAppId) return jsonRes(res, 400, { ok: false, error: 'larkAppId_required' });
+      const upstream = await proxyToDaemon(larkAppId, `/api/role-profiles/${encodeURIComponent(profileId)}/apply`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: raw,
+      });
+      res.writeHead(upstream.status, { 'content-type': 'application/json' });
+      res.end(await upstream.text());
+      return;
+    }
+
+    let mRoleProfileEntry: RegExpMatchArray | null;
+    if ((mRoleProfileEntry = url.pathname.match(/^\/api\/role-profiles\/([^/]+)\/([^/]+)$/))) {
+      const profileId = decodeURIComponent(mRoleProfileEntry[1]);
+      const larkAppId = decodeURIComponent(mRoleProfileEntry[2]);
+      if (!isValidRoleProfileId(profileId)) return jsonRes(res, 400, { ok: false, error: 'invalid_role_profile_id' });
+      if (req.method === 'GET') {
+        const upstream = await proxyToDaemon(larkAppId, `/api/role-profiles/${encodeURIComponent(profileId)}/${encodeURIComponent(larkAppId)}`, { method: 'GET' });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+      if (req.method === 'PUT') {
+        const chunks: Buffer[] = [];
+        for await (const c of req) chunks.push(c as Buffer);
+        const raw = Buffer.concat(chunks).toString('utf8') || '{}';
+        const upstream = await proxyToDaemon(larkAppId, `/api/role-profiles/${encodeURIComponent(profileId)}/${encodeURIComponent(larkAppId)}`, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: raw,
+        });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+      if (req.method === 'DELETE') {
+        const upstream = await proxyToDaemon(larkAppId, `/api/role-profiles/${encodeURIComponent(profileId)}/${encodeURIComponent(larkAppId)}`, { method: 'DELETE' });
+        res.writeHead(upstream.status, { 'content-type': 'application/json' });
+        res.end(await upstream.text());
+        return;
+      }
+    }
+
+    let mRoleProfile: RegExpMatchArray | null;
+    if (req.method === 'GET' && (mRoleProfile = url.pathname.match(/^\/api\/role-profiles\/([^/]+)$/))) {
+      const profileId = decodeURIComponent(mRoleProfile[1]);
+      if (!isValidRoleProfileId(profileId)) return jsonRes(res, 400, { ok: false, error: 'invalid_role_profile_id' });
+      type RoleProfileEntryAggregate = {
+        profileId: string;
+        larkAppId: string;
+        content: string;
+        byteLength: number;
+        updatedAt: number | null;
+      };
+      const byBot = new Map<string, RoleProfileEntryAggregate>();
+      await Promise.all(registry.list().map(async d => {
+        try {
+          const r = await fetch(`http://127.0.0.1:${d.ipcPort}/api/role-profiles/${encodeURIComponent(profileId)}`);
+          if (!r.ok) return;
+          const j = await r.json() as { entries?: any[] };
+          for (const entry of j.entries ?? []) {
+            if (typeof entry.larkAppId !== 'string' || typeof entry.content !== 'string') continue;
+            const updatedAt = typeof entry.updatedAt === 'number' ? entry.updatedAt : null;
+            const current = byBot.get(entry.larkAppId);
+            if (current && (current.updatedAt ?? 0) > (updatedAt ?? 0)) continue;
+            byBot.set(entry.larkAppId, {
+              profileId,
+              larkAppId: entry.larkAppId,
+              content: entry.content,
+              byteLength: typeof entry.byteLength === 'number' ? entry.byteLength : Buffer.byteLength(entry.content, 'utf-8'),
+              updatedAt,
+            });
+          }
+        } catch { /* skip */ }
+      }));
+      const entries = [...byBot.values()].sort((a, b) => a.larkAppId.localeCompare(b.larkAppId));
+      return jsonRes(res, 200, { profileId, entries });
+    }
+
     let m2: RegExpMatchArray | null;
     if (req.method === 'POST' && (m2 = url.pathname.match(/^\/api\/groups\/([^/]+)\/add-bots$/))) {
       const chatId = decodeURIComponent(m2[1]);
@@ -1310,7 +1441,7 @@ const server = createServer(async (req, res) => {
     // are app-scoped, so creator daemon and operator open_id come from the
     // SAME bot by construction. See dashboard/operator-selector.ts.
     if (req.method === 'POST' && url.pathname === '/api/groups/create') {
-      let parsed: { name?: unknown; larkAppIds?: unknown; userOpenIds?: unknown; bindWorkingDir?: unknown };
+      let parsed: { name?: unknown; larkAppIds?: unknown; userOpenIds?: unknown; bindWorkingDir?: unknown; roleProfileId?: unknown };
       try {
         const chunks: Buffer[] = [];
         for await (const c of req) chunks.push(c as Buffer);
@@ -1324,6 +1455,12 @@ const server = createServer(async (req, res) => {
         : [];
       if (selectedIds.length === 0) {
         return jsonRes(res, 400, { ok: false, error: 'larkAppIds_required' });
+      }
+      const roleProfileId = typeof parsed.roleProfileId === 'string' && parsed.roleProfileId.trim()
+        ? parsed.roleProfileId.trim()
+        : null;
+      if (roleProfileId && !isValidRoleProfileId(roleProfileId)) {
+        return jsonRes(res, 400, { ok: false, error: 'invalid_role_profile_id' });
       }
 
       const explicit = Array.isArray(parsed.userOpenIds)
@@ -1358,6 +1495,7 @@ const server = createServer(async (req, res) => {
         bindWorkingDir: typeof parsed.bindWorkingDir === 'string' && parsed.bindWorkingDir.trim()
           ? parsed.bindWorkingDir.trim()
           : undefined,
+        roleProfileId: roleProfileId ?? undefined,
       };
       const upstream = await fetch(
         `http://127.0.0.1:${creator.ipcPort}/api/groups/create`,
