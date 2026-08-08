@@ -22,6 +22,64 @@ interface DashboardSummaryScheduleRow {
   nextRunAt?: unknown;
 }
 
+const DASHBOARD_SUMMARY_SESSION_STATUSES = new Set([
+  'working',
+  'idle',
+  'analyzing',
+  'limited',
+  'stalled',
+  'starting',
+  'closed',
+  'dormant',
+]);
+
+function objectRow(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Validate the minimal daemon row shape consumed by the public projection.
+ * Rejecting malformed live data keeps the endpoint from publishing plausible
+ * but invented operational counts. */
+export function parseDashboardSummaryRows(input: {
+  sessions: unknown;
+  schedules: unknown;
+}): {
+  sessions: readonly DashboardSummarySessionRow[];
+  schedules: readonly DashboardSummaryScheduleRow[];
+} {
+  if (!Array.isArray(input.sessions)) throw new Error('dashboard summary sessions must be an array');
+  if (!Array.isArray(input.schedules)) throw new Error('dashboard summary schedules must be an array');
+  for (const row of input.sessions) {
+    if (!objectRow(row)
+      || typeof row.status !== 'string'
+      || !DASHBOARD_SUMMARY_SESSION_STATUSES.has(row.status)) {
+      throw new Error('dashboard summary session status is invalid');
+    }
+    if (row.pendingRepo !== undefined && typeof row.pendingRepo !== 'boolean') {
+      throw new Error('dashboard summary session pendingRepo must be a boolean');
+    }
+    if (row.tuiPromptActive !== undefined && typeof row.tuiPromptActive !== 'boolean') {
+      throw new Error('dashboard summary session tuiPromptActive must be a boolean');
+    }
+    if (row.agentAttention !== undefined && row.agentAttention !== null && !objectRow(row.agentAttention)) {
+      throw new Error('dashboard summary session agentAttention must be an object or null');
+    }
+  }
+  for (const row of input.schedules) {
+    if (!objectRow(row) || typeof row.enabled !== 'boolean') {
+      throw new Error('dashboard summary schedule enabled must be a boolean');
+    }
+    if (row.nextRunAt !== undefined
+      && (typeof row.nextRunAt !== 'string' || !Number.isFinite(Date.parse(row.nextRunAt)))) {
+      throw new Error('dashboard summary schedule nextRunAt must be a valid timestamp');
+    }
+  }
+  return {
+    sessions: input.sessions as DashboardSummarySessionRow[],
+    schedules: input.schedules as DashboardSummaryScheduleRow[],
+  };
+}
+
 /**
  * Reduce the dashboard's rich internal read model to a deliberately tiny
  * public summary contract. Keep the projection here as a positive allowlist:
@@ -41,6 +99,7 @@ export function buildDashboardSummary(input: {
     || !!row.pendingRepo
     || !!row.tuiPromptActive
     || row.status === 'limited'
+    || row.status === 'stalled'
   ));
   const enabledSchedules = input.schedules.filter(row => row.enabled === true);
   const nextRunMs = enabledSchedules.reduce<number | null>((earliest, row) => {

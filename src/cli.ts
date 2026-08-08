@@ -114,6 +114,7 @@ import { callDashboard, type DashboardEndpoint, type DashboardResult } from './c
 import {
   DASHBOARD_COMMAND_USAGE,
   executeDashboardCommand,
+  formatDashboardFallbackFailure,
 } from './cli/dashboard-command.js';
 import { globalInstallUpdateLockTargetIn, installLatestBotmuxSync } from './core/maintenance.js';
 import {
@@ -3171,7 +3172,7 @@ async function printDashboardHintWithRetry(): Promise<void> {
   }
   // Soft fallback
   if (last?.reason === 'no-active-token') {
-    console.log('   面板: 运行 `botmux dashboard` 获取链接');
+    console.log('   面板: 运行 `botmux dashboard` 创建登录链接');
   } else if (last?.reason === 'no-secret') {
     console.log('   面板: dashboard 凭证未就绪，启动后可用 `botmux dashboard` 获取链接');
   } else if (last?.reason === 'wrong-service') {
@@ -3181,9 +3182,9 @@ async function printDashboardHintWithRetry(): Promise<void> {
   }
 }
 
-/** Print the current or freshly-rotated dashboard URL. Bare `dashboard` keeps
- * the legacy rotate behavior; help and invalid subcommands never call either
- * credential endpoint. */
+/** Get or create the current dashboard URL, or explicitly rotate it. Bare
+ * `dashboard` is the non-rotating get-or-create form; help and invalid
+ * subcommands never call either credential endpoint. */
 async function cmdDashboard(args: string[]): Promise<void> {
   const execution = await executeDashboardCommand(args, callDashboardEndpoint);
   if (execution.kind === 'help') {
@@ -3223,11 +3224,8 @@ async function cmdDashboard(args: string[]): Promise<void> {
       '运行 `botmux restart` 重启 dashboard 并刷新端口文件。',
     );
     if (r.detail) console.error(`  详情: ${r.detail}`);
-  } else if (r.reason === 'no-active-token' && action === 'current') {
-    console.error('尚无 Dashboard token。运行 `botmux dashboard rotate` 创建一个。');
   } else {
-    // `no-active-token` can't occur on rotate (it always mints); fall through.
-    console.error('Rotation failed:', r.detail ?? r.reason);
+    console.error(formatDashboardFallbackFailure(action, r));
   }
   process.exit(1);
 }
@@ -5787,9 +5785,9 @@ botmux v${getVersion()} — IM ↔ AI 编程 CLI 桥接
   status      查看 daemon 状态
   upgrade     升级到最新版本（别名：update）
   dashboard current
-              打印当前 Web Dashboard 登录 URL（不轮换 token）
+              获取当前 Web Dashboard 登录 URL（裸 \`dashboard\` 同义；没有则创建）
   dashboard rotate
-              轮换 token，并打印新的登录 URL（裸 \`dashboard\` 为兼容别名）
+              显式轮换 token，并打印新的登录 URL
   device enroll|status|logout
               在宿主终端注册、查看或清除 desktop device 凭证（AI CLI 会话内拒绝）
   list        列出活跃会话（交互式选择并连接 tmux）

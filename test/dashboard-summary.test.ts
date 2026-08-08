@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildDashboardSummary,
+  parseDashboardSummaryRows,
   unavailableDashboardSummary,
 } from '../src/dashboard/dashboard-summary.js';
 
@@ -63,11 +64,62 @@ describe('buildDashboardSummary', () => {
     });
   });
 
+  it('counts a stalled active session as needing attention', () => {
+    expect(buildDashboardSummary({
+      generatedAt: new Date('2026-08-08T09:30:00.000Z'),
+      configuredBotCount: 1,
+      onlineBotCount: 1,
+      sessions: [{ status: 'stalled' }],
+      schedules: [],
+    }).sessions).toEqual({ active: 1, attention: 1 });
+  });
+
   it('does not invent aggregate zeroes when the live snapshot is unavailable', () => {
     expect(unavailableDashboardSummary(new Date('2026-08-08T09:30:00.000Z'))).toEqual({
       schemaVersion: 1,
       generatedAt: '2026-08-08T09:30:00.000Z',
       service: { status: 'degraded' },
     });
+  });
+});
+
+describe('parseDashboardSummaryRows', () => {
+  it('rejects a session row without a status instead of counting it as active', () => {
+    expect(() => parseDashboardSummaryRows({
+      sessions: [{}],
+      schedules: [],
+    })).toThrow(/session status/i);
+  });
+
+  it('rejects a schedule row without an enabled flag instead of silently dropping it', () => {
+    expect(() => parseDashboardSummaryRows({
+      sessions: [],
+      schedules: [{}],
+    })).toThrow(/schedule enabled/i);
+  });
+
+  it.each([
+    ['pendingRepo', { status: 'idle', pendingRepo: 'false' }],
+    ['tuiPromptActive', { status: 'idle', tuiPromptActive: 1 }],
+    ['agentAttention', { status: 'idle', agentAttention: 'blocked' }],
+  ])('rejects a malformed session %s signal', (field, row) => {
+    expect(() => parseDashboardSummaryRows({
+      sessions: [row],
+      schedules: [],
+    })).toThrow(new RegExp(`session ${field}`, 'i'));
+  });
+
+  it('rejects an unknown session status instead of treating it as active', () => {
+    expect(() => parseDashboardSummaryRows({
+      sessions: [{ status: 'unknown-from-malformed-snapshot' }],
+      schedules: [],
+    })).toThrow(/session status/i);
+  });
+
+  it('rejects a malformed next run timestamp instead of publishing a misleading null', () => {
+    expect(() => parseDashboardSummaryRows({
+      sessions: [],
+      schedules: [{ enabled: true, nextRunAt: 'not-a-date' }],
+    })).toThrow(/schedule nextRunAt/i);
   });
 });
