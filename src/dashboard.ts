@@ -219,6 +219,7 @@ import { assertPluginBindingTransition, describePluginDependencyError } from './
 import { inspectGatewayEntry } from './core/plugins/mcp/gateway-installer.js';
 import type { InstalledPluginRecord, PluginDashboardEntry } from './core/plugins/types.js';
 import { fetchDaemonIpc } from './core/daemon-ipc-auth.js';
+import { buildDashboardSummary, unavailableDashboardSummary } from './dashboard/dashboard-summary.js';
 
 const SECRET_PATH = dashboardSecretPath();
 const TOKEN_PATH = join(homedir(), '.botmux', '.dashboard-token');
@@ -2603,6 +2604,51 @@ function parseTerminalSessionId(pathname: string): string | undefined {
   return seg || undefined;
 }
 
+/**
+ * Read every currently-online daemon directly for the public dashboard
+ * summary. The regular aggregator intentionally retains offline
+ * rows for operator history, so using it here would make an offline bot's old
+ * sessions or schedules look live. A failed or malformed daemon snapshot
+ * rejects the whole projection instead of silently turning missing data into
+ * zeroes.
+ */
+async function liveDashboardSummary(): Promise<ReturnType<typeof buildDashboardSummary>> {
+  const daemons = registry.list();
+  const configuredBotCount = loadBotConfigs().length;
+  const snapshots = await Promise.all(daemons.map(async daemon => {
+    const [sessionsResponse, schedulesResponse] = await Promise.all([
+      fetchDaemonIpc(daemon.ipcPort, '/api/sessions', {
+        signal: AbortSignal.timeout(2_000),
+      }),
+      fetchDaemonIpc(daemon.ipcPort, '/api/schedules', {
+        signal: AbortSignal.timeout(2_000),
+      }),
+    ]);
+    if (!sessionsResponse.ok || !schedulesResponse.ok) {
+      throw new Error('daemon_snapshot_http_error');
+    }
+    const [sessionsBody, schedulesBody] = await Promise.all([
+      sessionsResponse.json() as Promise<{ sessions?: unknown }>,
+      schedulesResponse.json() as Promise<{ schedules?: unknown }>,
+    ]);
+    if (!Array.isArray(sessionsBody.sessions) || !Array.isArray(schedulesBody.schedules)) {
+      throw new Error('daemon_snapshot_malformed');
+    }
+    return {
+      sessions: sessionsBody.sessions,
+      schedules: schedulesBody.schedules,
+    };
+  }));
+
+  return buildDashboardSummary({
+    generatedAt: new Date(),
+    configuredBotCount,
+    onlineBotCount: daemons.length,
+    sessions: snapshots.flatMap(snapshot => snapshot.sessions),
+    schedules: snapshots.flatMap(snapshot => snapshot.schedules),
+  });
+}
+
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -2882,6 +2928,16 @@ const server = createServer(async (req, res) => {
     }
 
     // ─── Public API (cookie/token already validated above) ──────────────────
+
+    if (req.method === 'GET' && url.pathname === '/api/dashboard/v1/summary') {
+      res.setHeader('cache-control', 'no-store');
+      try {
+        return jsonRes(res, 200, await liveDashboardSummary());
+      } catch (error) {
+        logger.warn(`[dashboard-summary] live snapshot unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        return jsonRes(res, 503, unavailableDashboardSummary(new Date()));
+      }
+    }
 
     if (await handleResourceMonitorApi(req, res, url, resourceMonitor)) {
       return;
