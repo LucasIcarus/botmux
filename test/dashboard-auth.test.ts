@@ -586,6 +586,14 @@ describe('decideDashboardAuth — publicReadOnly mode', () => {
     expect(d.kind).toBe('deny401');
   });
 
+  it('publicReadOnly off → tokenless dashboard summary stays private', () => {
+    const d = decideDashboardAuth({
+      method: 'GET', pathname: '/api/dashboard/v1/summary', hasTokenParam: false,
+      presentedToken: undefined, activeToken: TOK, publicReadOnly: false,
+    });
+    expect(d.kind).toBe('deny401');
+  });
+
   it('stale token GET behaves like tokenless read-only (no 401 wall)', () => {
     const d = decideDashboardAuth({
       method: 'GET', pathname: '/api/schedules', hasTokenParam: false,
@@ -626,7 +634,7 @@ describe('decideDashboardAuth — publicReadOnly mode', () => {
   });
 
   it('allow-listed watch-work reads are public in publicReadOnly', () => {
-    for (const pathname of ['/api/sessions', '/api/schedules', '/api/settings', '/api/groups', '/events']) {
+    for (const pathname of ['/api/dashboard/v1/summary', '/api/sessions', '/api/schedules', '/api/settings', '/api/groups', '/events']) {
       const d = decideDashboardAuth({
         method: 'GET', pathname, hasTokenParam: false,
         presentedToken: undefined, activeToken: TOK, publicReadOnly: true,

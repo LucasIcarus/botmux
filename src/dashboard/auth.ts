@@ -233,8 +233,9 @@ export type AuthDecision =
  *  workflow tombstone are handled separately in decideDashboardAuth. Full v3
  *  workflow projections stay private because goals, node ids, and run ids can
  *  contain project or personal information.
- *  口径：公开 = 会话板 / 排程(脱敏) / 设置(只读) / 群名册 / 事件流。 */
+ *  口径：公开 = 运行摘要 / 会话板 / 排程(脱敏) / 设置(只读) / 群名册 / 事件流。 */
 const PUBLIC_READ_PATHS: ReadonlySet<string> = new Set([
+  '/api/dashboard/v1/summary', // strongly-redacted dashboard aggregate
   '/api/sessions',    // session board
   '/api/schedules',   // schedules page — task prompt redacted for anon upstream
   '/api/settings',    // read-only settings — only public flags + authed:false
