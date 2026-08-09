@@ -88,11 +88,13 @@ export function parseDashboardSummaryRows(input: {
  */
 export function buildDashboardSummary(input: {
   generatedAt: Date;
-  configuredBotCount: number;
-  onlineBotCount: number;
+  configuredBotAppIds: readonly string[];
+  onlineBotAppIds: readonly string[];
   sessions: readonly DashboardSummarySessionRow[];
   schedules: readonly DashboardSummaryScheduleRow[];
 }): DashboardSummary {
+  const onlineBotAppIds = new Set(input.onlineBotAppIds);
+  const configuredFleetOnline = input.configuredBotAppIds.every(appId => onlineBotAppIds.has(appId));
   const activeSessions = input.sessions.filter(row => row.status !== 'closed');
   const attentionSessions = activeSessions.filter(row => (
     !!row.agentAttention
@@ -113,9 +115,9 @@ export function buildDashboardSummary(input: {
     schemaVersion: DASHBOARD_SUMMARY_SCHEMA_VERSION,
     generatedAt: input.generatedAt.toISOString(),
     service: {
-      status: input.onlineBotCount === input.configuredBotCount ? 'healthy' : 'degraded',
+      status: configuredFleetOnline ? 'healthy' : 'degraded',
     },
-    bots: { online: input.onlineBotCount },
+    bots: { online: input.onlineBotAppIds.length },
     sessions: {
       active: activeSessions.length,
       attention: attentionSessions.length,

@@ -9,8 +9,8 @@ describe('buildDashboardSummary', () => {
   it('returns only the redacted aggregate contract', () => {
     const summary = buildDashboardSummary({
       generatedAt: new Date('2026-08-08T09:30:00.000Z'),
-      configuredBotCount: 3,
-      onlineBotCount: 3,
+      configuredBotAppIds: ['cli_a', 'cli_b', 'cli_c'],
+      onlineBotAppIds: ['cli_a', 'cli_b', 'cli_c'],
       sessions: [
         {
           sessionId: 'secret-session',
@@ -49,8 +49,8 @@ describe('buildDashboardSummary', () => {
   it('marks a partial bot fleet degraded and uses null when no enabled task has a valid next run', () => {
     expect(buildDashboardSummary({
       generatedAt: new Date('2026-08-08T09:30:00.000Z'),
-      configuredBotCount: 3,
-      onlineBotCount: 2,
+      configuredBotAppIds: ['cli_a', 'cli_b', 'cli_c'],
+      onlineBotAppIds: ['cli_a', 'cli_b'],
       sessions: [],
       schedules: [{ enabled: false, nextRunAt: '2026-08-09T00:00:00.000Z' }],
     })).toEqual({
@@ -64,11 +64,38 @@ describe('buildDashboardSummary', () => {
     });
   });
 
+  it('marks an equal-sized replacement fleet degraded without exposing bot identities', () => {
+    const summary = buildDashboardSummary({
+      generatedAt: new Date('2026-08-08T09:30:00.000Z'),
+      configuredBotAppIds: ['cli_a', 'cli_c'],
+      onlineBotAppIds: ['cli_a', 'cli_b'],
+      sessions: [],
+      schedules: [],
+    });
+
+    expect(summary.service).toEqual({ status: 'degraded' });
+    expect(summary.bots).toEqual({ online: 2 });
+    expect(JSON.stringify(summary)).not.toMatch(/cli_[abc]/);
+  });
+
+  it('stays healthy when every configured bot is online alongside an extra descriptor', () => {
+    const summary = buildDashboardSummary({
+      generatedAt: new Date('2026-08-08T09:30:00.000Z'),
+      configuredBotAppIds: ['cli_a'],
+      onlineBotAppIds: ['cli_a', 'cli_orphan'],
+      sessions: [],
+      schedules: [],
+    });
+
+    expect(summary.service).toEqual({ status: 'healthy' });
+    expect(summary.bots).toEqual({ online: 2 });
+  });
+
   it('counts a stalled active session as needing attention', () => {
     expect(buildDashboardSummary({
       generatedAt: new Date('2026-08-08T09:30:00.000Z'),
-      configuredBotCount: 1,
-      onlineBotCount: 1,
+      configuredBotAppIds: ['cli_a'],
+      onlineBotAppIds: ['cli_a'],
       sessions: [{ status: 'stalled' }],
       schedules: [],
     }).sessions).toEqual({ active: 1, attention: 1 });

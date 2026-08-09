@@ -2628,7 +2628,7 @@ function parseTerminalSessionId(pathname: string): string | undefined {
  */
 async function liveDashboardSummary(): Promise<ReturnType<typeof buildDashboardSummary>> {
   const daemons = registry.list();
-  const configuredBotCount = loadBotConfigs().length;
+  const configuredBots = loadBotConfigs();
   const snapshots = await Promise.all(daemons.map(async daemon => {
     const [sessionsResponse, schedulesResponse] = await Promise.all([
       fetchDaemonIpc(daemon.ipcPort, '/api/sessions', {
@@ -2653,8 +2653,8 @@ async function liveDashboardSummary(): Promise<ReturnType<typeof buildDashboardS
 
   return buildDashboardSummary({
     generatedAt: new Date(),
-    configuredBotCount,
-    onlineBotCount: daemons.length,
+    configuredBotAppIds: configuredBots.map(bot => bot.larkAppId),
+    onlineBotAppIds: daemons.map(daemon => daemon.larkAppId),
     sessions: snapshots.flatMap(snapshot => snapshot.sessions),
     schedules: snapshots.flatMap(snapshot => snapshot.schedules),
   });

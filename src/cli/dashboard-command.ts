@@ -10,6 +10,16 @@ export type DashboardCommandExecution =
   | { kind: 'invalid'; argument: string }
   | { kind: 'endpoint'; action: 'current' | 'rotate'; result: DashboardResult };
 
+const LEGACY_ENSURE_TOKEN_GATE_PREFIX =
+  '401 <h1>Token expired</h1><p>Run <code>botmux dashboard</code>';
+
+function legacyEnsureRouteMissing(result: DashboardResult): boolean {
+  if (result.ok) return false;
+  if (result.reason === 'wrong-service') return true;
+  return result.reason === 'http-error'
+    && result.detail?.startsWith(LEGACY_ENSURE_TOKEN_GATE_PREFIX) === true;
+}
+
 export function formatDashboardFallbackFailure(
   action: 'current' | 'rotate',
   failure: Extract<DashboardResult, { ok: false }>,
@@ -40,6 +50,31 @@ export async function executeDashboardCommand(
   }
 
   const action = raw === 'rotate' ? 'rotate' : 'current';
-  const path: DashboardEndpoint = action === 'current' ? '/__cli/ensure' : '/__cli/rotate';
-  return { kind: 'endpoint', action, result: await callEndpoint(path) };
+  if (action === 'rotate') {
+    return { kind: 'endpoint', action, result: await callEndpoint('/__cli/rotate') };
+  }
+
+  const current = await callEndpoint('/__cli/current');
+  if (current.ok || current.reason !== 'no-active-token') {
+    return { kind: 'endpoint', action, result: current };
+  }
+
+  const ensured = await callEndpoint('/__cli/ensure');
+  // The immediately preceding current probe proved this is a dashboard with no
+  // active token. Older dashboards either 404 an unknown ensure route or pass
+  // it through the browser token gate (the exact 401 HTML above). Only those
+  // version signatures may fall back to legacy rotate; a new endpoint's 500,
+  // auth failure, or transport failure must remain fail-closed.
+  if (legacyEnsureRouteMissing(ensured)) {
+    // A token may have appeared between the first read and the failed legacy
+    // capability probe (or rediscovery may have healed the recorded port).
+    // Re-read before using the mutating compatibility endpoint so a concurrent
+    // valid link is returned instead of invalidated.
+    const legacyCurrent = await callEndpoint('/__cli/current');
+    if (legacyCurrent.ok || legacyCurrent.reason !== 'no-active-token') {
+      return { kind: 'endpoint', action, result: legacyCurrent };
+    }
+    return { kind: 'endpoint', action, result: await callEndpoint('/__cli/rotate') };
+  }
+  return { kind: 'endpoint', action, result: ensured };
 }
