@@ -847,6 +847,74 @@ describe('/rename production routing — must not pre-create a session (review P
     expect(activeSessions.get(sessionKey(rootId, APP))?.workingDir).toBe('/tmp');
   });
 
+  it('card-off pinned cwd + `/t /goal ...` seeds the thread before the initial raw fork', async () => {
+    const bot = registerBot({
+      larkAppId: APP,
+      larkAppSecret: 's',
+      cliId: 'codex',
+      allowedUsers: [OWNER],
+      defaultWorkingDir: '/tmp',
+      disableStreamingCard: true,
+    });
+    bot.resolvedAllowedUsers = [OWNER];
+    const rootId = 'om_force_topic_goal_pinned';
+    const rawOpening = '/goal 检查实现';
+
+    await handleNewTopic(
+      makeEventData(rootId, `/t ${rawOpening}`),
+      makeCtx(rootId, rootId),
+    );
+
+    expect(mocks.replyMessage.mock.calls[0]?.slice(0, 5)).toEqual([
+      APP,
+      rootId,
+      '↪️ 已转入新话题，正在处理…',
+      'text',
+      true,
+    ]);
+    expect(mocks.replyMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.forkWorker.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.forkWorker.mock.calls[0]?.[0]?.pendingRawInput).toBe(rawOpening);
+    expect(mocks.forkWorker.mock.calls[0]?.[1]).toBe('');
+    expect(mocks.forkWorker).toHaveBeenCalledTimes(1);
+  });
+
+  it('card-off no-project fallback + `/t /goal ...` seeds the thread before the initial raw fork', async () => {
+    const bot = registerBot({
+      larkAppId: APP,
+      larkAppSecret: 's',
+      cliId: 'codex',
+      allowedUsers: [OWNER],
+      workingDirs: ['/tmp'],
+      disableStreamingCard: true,
+    });
+    bot.resolvedAllowedUsers = [OWNER];
+    mocks.scanMultipleProjects.mockReturnValue([]);
+    const rootId = 'om_force_topic_goal_no_projects';
+    const rawOpening = '/goal 检查实现';
+
+    await handleNewTopic(
+      makeEventData(rootId, `/t ${rawOpening}`),
+      makeCtx(rootId, rootId),
+    );
+
+    expect(mocks.scanMultipleProjects).toHaveBeenCalled();
+    expect(mocks.replyMessage.mock.calls[0]?.slice(0, 5)).toEqual([
+      APP,
+      rootId,
+      '↪️ 已转入新话题，正在处理…',
+      'text',
+      true,
+    ]);
+    expect(mocks.replyMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.forkWorker.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.forkWorker.mock.calls[0]?.[0]?.pendingRawInput).toBe(rawOpening);
+    expect(mocks.forkWorker.mock.calls[0]?.[1]).toBe('');
+    expect(mocks.forkWorker).toHaveBeenCalledTimes(1);
+  });
+
   it('card-off pinned cwd + `/t <content>` immediately seeds the thread and starts work', async () => {
     const bot = registerBot({
       larkAppId: APP,

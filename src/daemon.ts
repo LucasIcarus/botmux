@@ -3262,6 +3262,29 @@ async function sessionReply(
 export const __testOnly_sessionReply = sessionReply;
 export const __testOnly_activeSessions = activeSessions;
 
+async function maybeSeedCardlessForceTopicTurn(args: {
+  ds: DaemonSession;
+  enabled: boolean;
+  anchor: string;
+  messageId: string;
+}): Promise<void> {
+  const { ds, enabled, anchor, messageId } = args;
+  if (!enabled || !streamingCardDisabledFor(ds, messageId)) return;
+  try {
+    await sessionReply(
+      anchor,
+      tr('daemon.force_topic_started', undefined, localeForBot(ds.larkAppId)),
+      'text',
+      ds.larkAppId,
+    );
+  } catch (err) {
+    // Thread materialization is a UX acknowledgement, not permission to drop
+    // an accepted task. Keep starting the worker if this lightweight reply
+    // fails; the final answer can still seed the thread.
+    logger.warn(`[/t] Failed to seed card-off topic reply: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 async function revokeQuotaGrant(
   larkAppId: string,
   chatId: string,
@@ -16290,10 +16313,15 @@ async function startInitialPassthroughSession(args: {
    *  这样飞书 sender_type 缺失/变值但已识别 peer 时冷启动 passthrough 也归属为 bot，
    *  不扩大 quota 的信任边界。 */
   senderIsBot?: boolean;
+  /** This raw cold start came from `/t ...`; seed a visible thread only on the
+   *  direct-fork branches that otherwise produce no immediate reply. */
+  cardlessForceTopicSeed: boolean;
 }): Promise<void> {
   const {
     larkAppId, chatId, chatType, scope, anchor, messageId, replyRootId,
-    parsed, cmd, commandContent, senderOpenId, substitute, senderUnionId, memberUnionId, ownerOpenId, ownerUnionId, creatorOpenId, botSender, senderIsBot,
+    parsed, cmd, commandContent, senderOpenId, substitute, senderUnionId,
+    memberUnionId, ownerOpenId, ownerUnionId, creatorOpenId, botSender,
+    senderIsBot, cardlessForceTopicSeed,
     routeToCanonicalOwner,
   } = args;
   if (!await enforceMessageQuotaForCliInput(larkAppId, chatId, senderOpenId, messageId, anchor, senderUnionId, memberUnionId, chatType, botSender)) {
@@ -16400,6 +16428,12 @@ async function startInitialPassthroughSession(args: {
 
   if (pinnedWorkingDir) {
     if (await replyInvalidWorkingDirs(anchor, larkAppId, ds)) return;
+    await maybeSeedCardlessForceTopicTurn({
+      ds,
+      enabled: cardlessForceTopicSeed,
+      anchor,
+      messageId,
+    });
     const availableBots = await getAvailableBots(larkAppId, chatId);
     forkReservedInitialRawSession(ds, availableBots);
     const reason = oncallEntry
@@ -16426,6 +16460,12 @@ async function startInitialPassthroughSession(args: {
   }
 
   ds.pendingRepo = false;
+  await maybeSeedCardlessForceTopicTurn({
+    ds,
+    enabled: cardlessForceTopicSeed,
+    anchor,
+    messageId,
+  });
   const availableBots = await getAvailableBots(larkAppId, chatId);
   forkReservedInitialRawSession(ds, availableBots);
   logger.info(`[${tag(ds)}] No projects to select, queued initial raw passthrough ${commandContent.substring(0, 40)}`);
@@ -16733,6 +16773,7 @@ async function handleNewTopicAdmitted(data: any, ctx: RoutingContext): Promise<v
           // bots included), matching the twin new-topic spawn path so冷启动
           // passthrough 也能让 bot→bot 的 --mention-back 直通不对称门禁。
           senderIsBot: isForeignBotSender,
+          cardlessForceTopicSeed: forceTopic !== null,
           // New-topic senders are humans here (mirrors the normal new-topic
           // spawn path, which assigns ownership unconditionally too).
           ownerOpenId: senderOpenId,
@@ -17127,22 +17168,6 @@ async function handleNewTopicAdmitted(data: any, ctx: RoutingContext): Promise<v
       turnId: messageId,
     });
   }
-  const maybeSeedCardlessForceTopic = async (): Promise<void> => {
-    if (!forceTopic || isBareForceTopic || !streamingCardDisabledFor(ds, messageId)) return;
-    try {
-      await sessionReply(
-        anchor,
-        tr('daemon.force_topic_started', undefined, localeForBot(larkAppId)),
-        'text',
-        larkAppId,
-      );
-    } catch (err) {
-      // Thread materialization is a UX acknowledgement, not permission to drop
-      // an accepted task. Keep starting the worker if this lightweight reply
-      // fails; the final answer can still seed the thread.
-      logger.warn(`[/t] Failed to seed card-off topic reply: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
   messageQueue.ensureQueue(anchor);
   messageQueue.appendMessage(anchor, parsed);
 
@@ -17160,7 +17185,12 @@ async function handleNewTopicAdmitted(data: any, ctx: RoutingContext): Promise<v
   if (pinnedWorkingDir) {
     if (await replyInvalidWorkingDirs(anchor, larkAppId, ds)) return;
     ensureSessionWhiteboard(ds);
-    await maybeSeedCardlessForceTopic();
+    await maybeSeedCardlessForceTopicTurn({
+      ds,
+      enabled: !!forceTopic && !isBareForceTopic,
+      anchor,
+      messageId,
+    });
     const availableBots = await getAvailableBots(larkAppId, chatId);
     await noteTurnReceived(ds, messageId, content, newTopicSender, messageId, substituteTrigger ? SUBSTITUTE_RECEIVED_REACTION_EMOJI_TYPE : undefined);
     forkReservedInitialSession(ds, availableBots);
@@ -17195,7 +17225,12 @@ async function handleNewTopicAdmitted(data: any, ctx: RoutingContext): Promise<v
     // No projects found — skip repo selection, spawn directly
     ds.pendingRepo = false;
     ensureSessionWhiteboard(ds);
-    await maybeSeedCardlessForceTopic();
+    await maybeSeedCardlessForceTopicTurn({
+      ds,
+      enabled: !!forceTopic && !isBareForceTopic,
+      anchor,
+      messageId,
+    });
     const availableBots = await getAvailableBots(larkAppId, chatId);
     await noteTurnReceived(ds, messageId, content, newTopicSender, messageId, substituteTrigger ? SUBSTITUTE_RECEIVED_REACTION_EMOJI_TYPE : undefined);
     forkReservedInitialSession(ds, availableBots);
@@ -18015,6 +18050,7 @@ async function handleThreadReplyAdmitted(
           // treat as bot for --mention-back (never mis-attribute a peer bot as
           // human when飞书 sender_type 缺失/变值但已识别 peer).
           senderIsBot: isBotSenderType || isForeignBot,
+          cardlessForceTopicSeed: false,
           // Bot-started cold starts get no human owner (mirrors the auto-create
           // path) — see the ownership note on startInitialPassthroughSession.
           ownerOpenId: isForeignBot ? undefined : threadSenderOpenId,
