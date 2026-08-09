@@ -192,9 +192,13 @@ describe('desktop dashboard embed', () => {
     );
   });
 
-  it('renders structured dashboard locate failure reason/message', () => {
+  it('renders selectable structured dashboard locate failure reason/message', () => {
     const rendererSource = readFileSync(
       fileURLToPath(new URL('../../src/desktop/renderer/app.ts', import.meta.url)),
+      'utf-8',
+    );
+    const styleSource = readFileSync(
+      fileURLToPath(new URL('../../src/desktop/renderer/style.css', import.meta.url)),
       'utf-8',
     );
 
@@ -203,6 +207,15 @@ describe('desktop dashboard embed', () => {
     expect(rendererSource).toContain('formatDashboardLocateFailure');
     expect(rendererSource).toContain('locate.reason');
     expect(rendererSource).toContain('locate.message');
+    const selectableDiagnosticText = [
+      ...styleSource.matchAll(/([^{}]+)\{([^{}]*user-select:\s*text;[^{}]*)\}/g),
+    ].some(([, selectors]) =>
+      selectors
+        .split(',')
+        .map(selector => selector.trim())
+        .includes('.empty-dashboard'),
+    );
+    expect(selectableDiagnosticText).toBe(true);
   });
 
   it('switches sidebar routes without re-querying the dashboard URL after load', () => {

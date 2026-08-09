@@ -59,7 +59,8 @@ body {
 
 .runtime-meta,
 .version-line,
-.log-output {
+.log-output,
+.empty-dashboard {
   user-select: text;
 }
 
